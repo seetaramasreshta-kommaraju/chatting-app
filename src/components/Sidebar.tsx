@@ -81,7 +81,8 @@ export default function Sidebar({ session, currentUser, activeChat, setActiveCha
       .single();
 
     if (convError) {
-      toast.error('Failed to create conversation');
+      toast.error(`Failed to create conversation: ${convError.message}`);
+      console.error(convError);
       return;
     }
 
