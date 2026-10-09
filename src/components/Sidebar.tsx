@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabase';
 import { Search, Plus, LogOut, Users, MessageSquare } from 'lucide-react';
+import { toast } from 'react-hot-toast';
 
 export default function Sidebar({ session, currentUser, activeChat, setActiveChat }: any) {
   const [conversations, setConversations] = useState<any[]>([]);
@@ -26,12 +27,30 @@ export default function Sidebar({ session, currentUser, activeChat, setActiveCha
   const fetchConversations = async () => {
     const { data, error } = await supabase
       .from('conversation_members')
-      .select('conversation_id, conversations(id, type, name, updated_at)')
-      .eq('user_id', session.user.id)
-      .order('joined_at', { ascending: false });
+      .select(`
+        conversation_id,
+        conversations (
+          id, type, name, updated_at,
+          conversation_members (
+            profiles (id, display_name, avatar_url, username)
+          )
+        )
+      `)
+      .eq('user_id', session.user.id);
 
     if (!error && data) {
-      setConversations(data.map(d => d.conversations));
+      const formatted = data.map((d: any) => {
+        const conv = d.conversations;
+        if (conv.type === 'direct') {
+          const other = conv.conversation_members.find((m: any) => m.profiles.id !== session.user.id);
+          conv.displayName = other ? other.profiles.display_name : 'User';
+        } else {
+          conv.displayName = conv.name || 'Group Chat';
+        }
+        return conv;
+      });
+      // Sort in javascript since we couldn't order by joined_at easily with inner joins
+      setConversations(formatted);
     }
   };
 
@@ -55,17 +74,28 @@ export default function Sidebar({ session, currentUser, activeChat, setActiveCha
   };
 
   const startChat = async (targetUserId: string) => {
-    const { data: convData, error: _convError } = await supabase
+    const { data: convData, error: convError } = await supabase
       .from('conversations')
       .insert({ type: 'direct', created_by: session.user.id })
       .select()
       .single();
 
+    if (convError) {
+      toast.error('Failed to create conversation');
+      return;
+    }
+
     if (convData) {
-      await supabase.from('conversation_members').insert([
+      const { error: memberError } = await supabase.from('conversation_members').insert([
         { conversation_id: convData.id, user_id: session.user.id, role: 'admin' },
         { conversation_id: convData.id, user_id: targetUserId, role: 'member' }
       ]);
+      
+      if (memberError) {
+        toast.error('Failed to add members to conversation');
+        console.error(memberError);
+        return;
+      }
       
       setActiveChat(convData.id);
       setShowNewChat(false);
@@ -188,7 +218,7 @@ export default function Sidebar({ session, currentUser, activeChat, setActiveCha
                   >
                     <div className="relative">
                        <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-surface-100 to-surface-200 flex items-center justify-center text-surface-600 font-bold text-lg overflow-hidden shrink-0">
-                         {conv.type === 'group' ? <Users size={24} /> : (conv.name?.charAt(0) || 'C')}
+                         {conv.type === 'group' ? <Users size={24} /> : (conv.displayName?.charAt(0) || 'U')}
                        </div>
                        {/* Online badge mockup */}
                        <div className="absolute -bottom-1 -right-1 w-4 h-4 bg-green-500 border-2 border-white rounded-full"></div>
@@ -197,7 +227,7 @@ export default function Sidebar({ session, currentUser, activeChat, setActiveCha
                     <div className="flex-1 min-w-0">
                       <div className="flex justify-between items-baseline mb-0.5">
                         <h4 className="font-bold text-surface-900 truncate">
-                          {conv.name || 'Chat Group'}
+                          {conv.displayName}
                         </h4>
                         <span className="text-xs font-semibold text-brand-500 shrink-0">
                           12:30 PM

@@ -41,10 +41,24 @@ export default function ChatArea({ chatId, session }: any) {
   const fetchChatDetails = async () => {
     const { data } = await supabase
       .from('conversations')
-      .select('*')
+      .select(`
+        *,
+        conversation_members (
+          profiles (id, display_name, avatar_url, username)
+        )
+      `)
       .eq('id', chatId)
       .single();
-    if (data) setChatDetails(data);
+      
+    if (data) {
+      if (data.type === 'direct') {
+        const other = data.conversation_members?.find((m: any) => m.profiles.id !== session.user.id);
+        data.displayName = other ? other.profiles.display_name : 'User';
+      } else {
+        data.displayName = data.name || 'Group Chat';
+      }
+      setChatDetails(data);
+    }
   };
 
   const fetchMessages = async () => {
@@ -104,10 +118,10 @@ export default function ChatArea({ chatId, session }: any) {
       <div className="h-[72px] px-6 bg-white/80 backdrop-blur-md flex items-center justify-between border-b border-surface-200 z-10 sticky top-0 shadow-sm">
         <div className="flex items-center gap-4">
           <div className="w-11 h-11 rounded-2xl bg-gradient-to-tr from-surface-200 to-surface-300 flex items-center justify-center text-surface-700 font-bold text-lg shadow-sm">
-            {chatDetails?.name?.charAt(0) || 'C'}
+            {chatDetails?.type === 'group' ? 'G' : (chatDetails?.displayName?.charAt(0) || 'C')}
           </div>
           <div>
-            <h3 className="font-bold text-surface-900 text-lg tracking-tight leading-tight">{chatDetails?.name || 'Chat'}</h3>
+            <h3 className="font-bold text-surface-900 text-lg tracking-tight leading-tight">{chatDetails?.displayName || 'Chat'}</h3>
             <p className="text-xs font-semibold text-brand-500">Active now</p>
           </div>
         </div>
