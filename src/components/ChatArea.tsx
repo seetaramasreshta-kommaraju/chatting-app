@@ -8,6 +8,7 @@ export default function ChatArea({ chatId, session }: any) {
   const [newMessage, setNewMessage] = useState('');
   const [chatDetails, setChatDetails] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const [fetchError, setFetchError] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -23,6 +24,7 @@ export default function ChatArea({ chatId, session }: any) {
         filter: `conversation_id=eq.${chatId}`
       }, payload => {
         setMessages(current => {
+          if (payload.new.conversation_id !== chatId) return current;
           if (current.some(m => m.id === payload.new.id)) return current;
           return [...current, payload.new];
         });
@@ -66,6 +68,9 @@ export default function ChatArea({ chatId, session }: any) {
 
   const fetchMessages = async () => {
     setLoading(true);
+    setFetchError(null);
+    setMessages([]); // Clear old messages
+    
     const { data, error } = await supabase
       .from('messages')
       .select('*, profiles(display_name, avatar_url)')
@@ -74,6 +79,7 @@ export default function ChatArea({ chatId, session }: any) {
     
     if (error) {
       console.error('Failed to fetch messages:', error);
+      setFetchError(error.message);
     }
     
     if (data) {
@@ -159,6 +165,12 @@ export default function ChatArea({ chatId, session }: any) {
 
       {/* Messages */}
       <div className="flex-1 overflow-y-auto p-6 chat-scroll space-y-6 z-0">
+        
+        {fetchError && (
+          <div className="bg-red-50 text-red-600 p-4 rounded-xl text-center font-medium text-sm border border-red-100 shadow-sm mx-4 my-2">
+            Failed to load messages: {fetchError}
+          </div>
+        )}
         
         <div className="text-center my-6">
           <span className="bg-surface-200/50 text-surface-600 text-[11px] font-bold tracking-wider px-3 py-1 rounded-full uppercase">
