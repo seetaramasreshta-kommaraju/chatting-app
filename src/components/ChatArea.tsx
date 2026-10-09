@@ -80,7 +80,7 @@ export default function ChatArea({ chatId, session }: any) {
     
     const { data, error } = await supabase
       .from('messages')
-      .select('*, profiles(display_name, avatar_url)')
+      .select('*, profiles!messages_sender_id_fkey(display_name, avatar_url)')
       .eq('conversation_id', chatId)
       .order('created_at', { ascending: true });
     
