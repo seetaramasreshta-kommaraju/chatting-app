@@ -8,6 +8,9 @@ export default function Sidebar({ session, currentUser, activeChat, setActiveCha
   const [searchQuery, setSearchQuery] = useState('');
   const [showNewChat, setShowNewChat] = useState(false);
   const [searchResults, setSearchResults] = useState<any[]>([]);
+  const [isCreatingGroup, setIsCreatingGroup] = useState(false);
+  const [groupName, setGroupName] = useState('');
+  const [selectedUsers, setSelectedUsers] = useState<any[]>([]);
 
   useEffect(() => {
     fetchConversations();
@@ -28,7 +31,7 @@ export default function Sidebar({ session, currentUser, activeChat, setActiveCha
     const { data, error } = await supabase
       .from('conversation_members')
       .select(`
-        conversation_id,
+        conversation_id, last_read_at,
         conversations (
           id, type, name, updated_at,
           conversation_members (
@@ -47,6 +50,10 @@ export default function Sidebar({ session, currentUser, activeChat, setActiveCha
         } else {
           conv.displayName = conv.name || 'Group Chat';
         }
+        
+        // Check for unread
+        conv.hasUnread = new Date(conv.updated_at) > new Date(d.last_read_at);
+        
         return conv;
       });
       // Sort in javascript since we couldn't order by joined_at easily with inner joins
@@ -74,6 +81,19 @@ export default function Sidebar({ session, currentUser, activeChat, setActiveCha
   };
 
   const startChat = async (targetUserId: string) => {
+    // Check if direct chat already exists
+    const existingConv = conversations.find(c => 
+      c.type === 'direct' && 
+      c.conversation_members?.some((m: any) => m.profiles.id === targetUserId)
+    );
+
+    if (existingConv) {
+      setActiveChat(existingConv.id);
+      setShowNewChat(false);
+      setSearchQuery('');
+      return;
+    }
+
     const { data: convData, error: convError } = await supabase
       .from('conversations')
       .insert({ type: 'direct', created_by: session.user.id })
@@ -99,7 +119,48 @@ export default function Sidebar({ session, currentUser, activeChat, setActiveCha
       }
       
       setActiveChat(convData.id);
+      setActiveChat(convData.id);
       setShowNewChat(false);
+      setSearchQuery('');
+      setIsCreatingGroup(false);
+      setSelectedUsers([]);
+      setGroupName('');
+      fetchConversations();
+    }
+  };
+
+  const createGroupChat = async () => {
+    if (!groupName.trim() || selectedUsers.length === 0) return;
+
+    const { data: convData, error: convError } = await supabase
+      .from('conversations')
+      .insert({ type: 'group', name: groupName, created_by: session.user.id })
+      .select()
+      .single();
+
+    if (convError) {
+      toast.error(`Failed to create group: ${convError.message}`);
+      return;
+    }
+
+    if (convData) {
+      const members = [
+        { conversation_id: convData.id, user_id: session.user.id, role: 'admin' },
+        ...selectedUsers.map(u => ({ conversation_id: convData.id, user_id: u.id, role: 'member' }))
+      ];
+
+      const { error: memberError } = await supabase.from('conversation_members').insert(members);
+      
+      if (memberError) {
+        toast.error('Failed to add members to group');
+        return;
+      }
+      
+      setActiveChat(convData.id);
+      setShowNewChat(false);
+      setIsCreatingGroup(false);
+      setSelectedUsers([]);
+      setGroupName('');
       setSearchQuery('');
       fetchConversations();
     }
@@ -149,9 +210,59 @@ export default function Sidebar({ session, currentUser, activeChat, setActiveCha
         {showNewChat ? (
           <div className="p-4 animate-fade-in">
             <div className="flex justify-between items-center mb-5">
-              <h4 className="font-bold text-surface-900">Start a Conversation</h4>
-              <button onClick={() => setShowNewChat(false)} className="text-sm font-semibold text-brand-600 hover:text-brand-700 bg-brand-50 px-3 py-1 rounded-lg transition-colors">Cancel</button>
+              <h4 className="font-bold text-surface-900">{isCreatingGroup ? 'Create Group Chat' : 'Start a Conversation'}</h4>
+              <button onClick={() => {
+                setShowNewChat(false);
+                setIsCreatingGroup(false);
+                setSelectedUsers([]);
+                setGroupName('');
+              }} className="text-sm font-semibold text-brand-600 hover:text-brand-700 bg-brand-50 px-3 py-1 rounded-lg transition-colors">Cancel</button>
             </div>
+            
+            <div className="flex gap-2 mb-4">
+              <button 
+                onClick={() => setIsCreatingGroup(false)}
+                className={`flex-1 py-1.5 text-sm font-semibold rounded-lg transition-all ${!isCreatingGroup ? 'bg-brand-100 text-brand-700' : 'bg-surface-50 text-surface-500 hover:bg-surface-100'}`}
+              >
+                Direct
+              </button>
+              <button 
+                onClick={() => setIsCreatingGroup(true)}
+                className={`flex-1 py-1.5 text-sm font-semibold rounded-lg transition-all ${isCreatingGroup ? 'bg-brand-100 text-brand-700' : 'bg-surface-50 text-surface-500 hover:bg-surface-100'}`}
+              >
+                Group
+              </button>
+            </div>
+
+            {isCreatingGroup && (
+              <div className="mb-4">
+                <input 
+                  type="text" 
+                  placeholder="Group Name" 
+                  value={groupName}
+                  onChange={(e) => setGroupName(e.target.value)}
+                  className="w-full bg-surface-50 border border-surface-200 rounded-xl py-2 px-3 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500 mb-2 font-medium"
+                />
+                {selectedUsers.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5 mb-2">
+                    {selectedUsers.map(u => (
+                      <span key={u.id} className="inline-flex items-center gap-1 bg-brand-50 text-brand-700 px-2 py-1 rounded-md text-xs font-semibold">
+                        {u.display_name}
+                        <button onClick={() => setSelectedUsers(current => current.filter(user => user.id !== u.id))} className="text-brand-400 hover:text-brand-700">&times;</button>
+                      </span>
+                    ))}
+                  </div>
+                )}
+                <button 
+                  onClick={createGroupChat}
+                  disabled={!groupName.trim() || selectedUsers.length === 0}
+                  className="w-full bg-brand-600 text-white font-semibold py-2 rounded-xl disabled:bg-surface-200 disabled:text-surface-400 transition-colors"
+                >
+                  Create Group
+                </button>
+              </div>
+            )}
+
             <div className="relative mb-4">
                <Search className="absolute left-3.5 top-2.5 text-surface-400" size={18} />
                <input 
@@ -164,21 +275,41 @@ export default function Sidebar({ session, currentUser, activeChat, setActiveCha
             </div>
             
             <div className="space-y-1">
-              {searchResults.map(user => (
-                <div 
-                  key={user.id} 
-                  onClick={() => startChat(user.id)}
-                  className="flex items-center gap-4 p-3 hover:bg-brand-50 rounded-xl cursor-pointer transition-colors group"
-                >
-                  <div className="w-10 h-10 rounded-full bg-gradient-to-tr from-surface-200 to-surface-300 flex items-center justify-center text-surface-600 font-bold group-hover:from-brand-200 group-hover:to-brand-300 group-hover:text-brand-700 transition-colors">
-                    {user.display_name ? user.display_name.charAt(0).toUpperCase() : 'U'}
+              {searchResults.map(user => {
+                const isSelected = selectedUsers.some(u => u.id === user.id);
+                return (
+                  <div 
+                    key={user.id} 
+                    onClick={() => {
+                      if (isCreatingGroup) {
+                        if (isSelected) {
+                          setSelectedUsers(current => current.filter(u => u.id !== user.id));
+                        } else {
+                          setSelectedUsers(current => [...current, user]);
+                        }
+                      } else {
+                        startChat(user.id);
+                      }
+                    }}
+                    className={`flex items-center justify-between gap-4 p-3 rounded-xl cursor-pointer transition-colors group ${isSelected ? 'bg-brand-50 border border-brand-100' : 'hover:bg-surface-50 border border-transparent'}`}
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 rounded-full bg-gradient-to-tr from-surface-200 to-surface-300 flex items-center justify-center text-surface-600 font-bold transition-colors">
+                        {user.display_name ? user.display_name.charAt(0).toUpperCase() : 'U'}
+                      </div>
+                      <div>
+                        <p className="font-bold text-surface-900">{user.display_name}</p>
+                        <p className="text-xs font-medium text-surface-500">@{user.username}</p>
+                      </div>
+                    </div>
+                    {isCreatingGroup && (
+                      <div className={`w-5 h-5 rounded border flex items-center justify-center ${isSelected ? 'bg-brand-500 border-brand-500 text-white' : 'border-surface-300'}`}>
+                        {isSelected && <span className="text-xs">✓</span>}
+                      </div>
+                    )}
                   </div>
-                  <div>
-                    <p className="font-bold text-surface-900">{user.display_name}</p>
-                    <p className="text-xs font-medium text-surface-500">@{user.username}</p>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
               {searchQuery.length > 2 && searchResults.length === 0 && (
                 <div className="text-center py-8">
                   <div className="w-12 h-12 bg-surface-100 rounded-full flex items-center justify-center mx-auto mb-3">
@@ -227,15 +358,15 @@ export default function Sidebar({ session, currentUser, activeChat, setActiveCha
                     
                     <div className="flex-1 min-w-0">
                       <div className="flex justify-between items-baseline mb-0.5">
-                        <h4 className="font-bold text-surface-900 truncate">
+                        <h4 className={`font-bold truncate ${conv.hasUnread ? 'text-brand-600' : 'text-surface-900'}`}>
                           {conv.displayName}
                         </h4>
-                        <span className="text-xs font-semibold text-brand-500 shrink-0">
-                          12:30 PM
+                        <span className={`text-xs font-semibold shrink-0 ${conv.hasUnread ? 'text-brand-600' : 'text-surface-400'}`}>
+                          {new Date(conv.updated_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                         </span>
                       </div>
-                      <p className="text-sm text-surface-500 truncate pr-4">
-                        Tap to view messages
+                      <p className={`text-sm truncate pr-4 ${conv.hasUnread ? 'text-surface-900 font-semibold' : 'text-surface-500'}`}>
+                        {conv.hasUnread ? 'New messages' : 'Tap to view messages'}
                       </p>
                     </div>
                   </div>

@@ -192,3 +192,22 @@ create policy "Users can delete their own objects" on storage.objects for delete
 -- Enable Realtime for messaging tables
 alter publication supabase_realtime add table public.messages;
 alter publication supabase_realtime add table public.conversations;
+
+-- Database Optimization: Indexes
+create index if not exists idx_messages_conversation_id_created_at on public.messages (conversation_id, created_at);
+create index if not exists idx_conversation_members_user_id on public.conversation_members (user_id, conversation_id);
+-- Trigger to update conversation timestamp
+create or replace function public.update_conversation_timestamp()
+returns trigger as $$
+begin
+  update public.conversations
+  set updated_at = now()
+  where id = new.conversation_id;
+  return new;
+end;
+$$ language plpgsql security definer;
+
+drop trigger if exists on_message_inserted on public.messages;
+create trigger on_message_inserted
+  after insert on public.messages
+  for each row execute function public.update_conversation_timestamp();

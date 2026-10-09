@@ -32,6 +32,13 @@ export default function ChatArea({ chatId, session }: any) {
       })
       .subscribe();
 
+    // Update last_read_at for this user
+    supabase.from('conversation_members')
+      .update({ last_read_at: new Date().toISOString() })
+      .eq('conversation_id', chatId)
+      .eq('user_id', session.user.id)
+      .then();
+
     return () => {
       supabase.removeChannel(channel);
     };
