@@ -22,7 +22,10 @@ export default function ChatArea({ chatId, session }: any) {
         table: 'messages',
         filter: `conversation_id=eq.${chatId}`
       }, payload => {
-        setMessages(current => [...current, payload.new]);
+        setMessages(current => {
+          if (current.some(m => m.id === payload.new.id)) return current;
+          return [...current, payload.new];
+        });
         scrollToBottom();
       })
       .subscribe();
@@ -63,11 +66,15 @@ export default function ChatArea({ chatId, session }: any) {
 
   const fetchMessages = async () => {
     setLoading(true);
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from('messages')
       .select('*, profiles(display_name, avatar_url)')
       .eq('conversation_id', chatId)
       .order('created_at', { ascending: true });
+    
+    if (error) {
+      console.error('Failed to fetch messages:', error);
+    }
     
     if (data) {
       setMessages(data);
@@ -82,8 +89,21 @@ export default function ChatArea({ chatId, session }: any) {
 
     const tempMessage = newMessage;
     setNewMessage('');
+    
+    // Optimistic UI update for instant feedback
+    const messageId = crypto.randomUUID();
+    setMessages(current => [...current, {
+      id: messageId,
+      conversation_id: chatId,
+      sender_id: session.user.id,
+      content: tempMessage,
+      type: 'text',
+      created_at: new Date().toISOString()
+    }]);
+    scrollToBottom();
 
     const { error } = await supabase.from('messages').insert({
+      id: messageId,
       conversation_id: chatId,
       sender_id: session.user.id,
       content: tempMessage,
@@ -93,6 +113,8 @@ export default function ChatArea({ chatId, session }: any) {
     if (error) {
       toast.error(error.message || 'Failed to send message');
       console.error(error);
+      // Revert optimistic update on error
+      setMessages(current => current.filter(m => m.id !== messageId));
       return;
     }
     

@@ -187,5 +187,8 @@ drop policy if exists "Users can delete their own objects" on storage.objects;
 -- Storage policies
 create policy "Public Access" on storage.objects for select using ( bucket_id = 'chat_assets' );
 create policy "Authenticated users can upload" on storage.objects for insert with check ( bucket_id = 'chat_assets' and auth.role() = 'authenticated' );
-create policy "Users can update their own objects" on storage.objects for update using ( bucket_id = 'chat_assets' and auth.uid() = owner );
 create policy "Users can delete their own objects" on storage.objects for delete using ( bucket_id = 'chat_assets' and auth.uid() = owner );
+
+-- Enable Realtime for messaging tables
+alter publication supabase_realtime add table public.messages;
+alter publication supabase_realtime add table public.conversations;
