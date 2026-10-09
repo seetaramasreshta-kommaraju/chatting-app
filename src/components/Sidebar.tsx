@@ -1,5 +1,7 @@
 import { useState, useEffect } from 'react';
-import { supabase } from '../lib/supabase';
+import { collection, query, where, onSnapshot, addDoc, serverTimestamp, getDocs, orderBy, getDoc, doc } from 'firebase/firestore';
+import { signOut } from 'firebase/auth';
+import { db, auth } from '../lib/firebase';
 import { Search, Plus, LogOut, Users, MessageSquare } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 
@@ -13,78 +15,73 @@ export default function Sidebar({ session, currentUser, activeChat, setActiveCha
   const [selectedUsers, setSelectedUsers] = useState<any[]>([]);
 
   useEffect(() => {
-    fetchConversations();
-    
-    const channel = supabase
-      .channel('public:messages')
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, _payload => {
-         fetchConversations();
-      })
-      .subscribe();
+    // Listen to conversations where the current user is a member
+    const q = query(
+      collection(db, 'conversations'),
+      where('members', 'array-contains', session.uid)
+    );
 
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, []);
-
-  const fetchConversations = async () => {
-    const { data, error } = await supabase
-      .from('conversation_members')
-      .select(`
-        conversation_id, last_read_at,
-        conversations (
-          id, type, name, updated_at,
-          conversation_members (
-            profiles (id, display_name, avatar_url, username)
-          )
-        )
-      `)
-      .eq('user_id', session.user.id);
-
-    if (!error && data) {
-      const formatted = data.map((d: any) => {
-        const conv = d.conversations;
-        if (conv.type === 'direct') {
-          const other = conv.conversation_members.find((m: any) => m.profiles.id !== session.user.id);
-          conv.displayName = other ? other.profiles.display_name : 'User';
-        } else {
-          conv.displayName = conv.name || 'Group Chat';
+    const unsubscribe = onSnapshot(q, async (snapshot) => {
+      const convos = await Promise.all(snapshot.docs.map(async (d) => {
+        const data = d.data();
+        let displayName = data.name || 'Group Chat';
+        
+        if (data.type === 'direct') {
+          const otherUserId = data.members.find((id: string) => id !== session.uid);
+          if (otherUserId) {
+            const profileSnap = await getDoc(doc(db, 'profiles', otherUserId));
+            if (profileSnap.exists()) {
+              displayName = profileSnap.data().display_name;
+            } else {
+              displayName = 'Unknown User';
+            }
+          }
         }
         
-        // Check for unread
-        conv.hasUnread = new Date(conv.updated_at) > new Date(d.last_read_at);
-        
-        return conv;
-      });
-      // Sort in javascript since we couldn't order by joined_at easily with inner joins
-      setConversations(formatted);
-    }
-  };
+        return {
+          id: d.id,
+          ...data,
+          displayName,
+          updated_at: data.updated_at?.toDate() || new Date()
+        };
+      }));
+      
+      convos.sort((a, b) => b.updated_at.getTime() - a.updated_at.getTime());
+      setConversations(convos);
+    });
 
-  const handleSearch = async (query: string) => {
-    setSearchQuery(query);
-    if (query.length < 3) {
+    return () => unsubscribe();
+  }, [session.uid]);
+
+  const handleSearch = async (queryStr: string) => {
+    setSearchQuery(queryStr);
+    if (queryStr.length < 3) {
       setSearchResults([]);
       return;
     }
 
-    const { data, error } = await supabase
-      .from('profiles')
-      .select('id, username, display_name, avatar_url')
-      .ilike('username', `%${query}%`)
-      .neq('id', session.user.id)
-      .limit(10);
+    // In Firestore, a simple prefix search requires this:
+    const q = query(
+      collection(db, 'profiles'),
+      where('username', '>=', queryStr.toLowerCase()),
+      where('username', '<=', queryStr.toLowerCase() + '\uf8ff')
+    );
 
-    if (!error && data) {
-      setSearchResults(data);
+    try {
+      const snapshot = await getDocs(q);
+      const results = snapshot.docs
+        .map(d => ({ id: d.id, ...d.data() }))
+        .filter(u => u.id !== session.uid);
+      setSearchResults(results);
+    } catch (error) {
+      console.error(error);
     }
   };
 
   const startChat = async (targetUserId: string) => {
     // Check if direct chat already exists
     const existingConv = conversations.find(c => 
-      c.type === 'direct' && 
-      c.conversation_members?.some((m: any) => m.profiles.id === targetUserId)
+      c.type === 'direct' && c.members.includes(targetUserId)
     );
 
     if (existingConv) {
@@ -94,85 +91,52 @@ export default function Sidebar({ session, currentUser, activeChat, setActiveCha
       return;
     }
 
-    const { data: convData, error: convError } = await supabase
-      .from('conversations')
-      .insert({ type: 'direct', created_by: session.user.id })
-      .select()
-      .single();
-
-    if (convError) {
-      toast.error(`Failed to create conversation: ${convError.message}`);
-      console.error(convError);
-      return;
-    }
-
-    if (convData) {
-      const { error: memberError } = await supabase.from('conversation_members').insert([
-        { conversation_id: convData.id, user_id: session.user.id, role: 'admin' },
-        { conversation_id: convData.id, user_id: targetUserId, role: 'member' }
-      ]);
+    try {
+      const docRef = await addDoc(collection(db, 'conversations'), {
+        type: 'direct',
+        members: [session.uid, targetUserId],
+        created_by: session.uid,
+        updated_at: serverTimestamp()
+      });
       
-      if (memberError) {
-        toast.error('Failed to add members to conversation');
-        console.error(memberError);
-        return;
-      }
-      
-      setActiveChat(convData.id);
-      setActiveChat(convData.id);
+      setActiveChat(docRef.id);
       setShowNewChat(false);
       setSearchQuery('');
-      setIsCreatingGroup(false);
-      setSelectedUsers([]);
-      setGroupName('');
-      fetchConversations();
+    } catch (error: any) {
+      toast.error(`Failed to create chat: ${error.message}`);
     }
   };
 
   const createGroupChat = async () => {
     if (!groupName.trim() || selectedUsers.length === 0) return;
 
-    const { data: convData, error: convError } = await supabase
-      .from('conversations')
-      .insert({ type: 'group', name: groupName, created_by: session.user.id })
-      .select()
-      .single();
-
-    if (convError) {
-      toast.error(`Failed to create group: ${convError.message}`);
-      return;
-    }
-
-    if (convData) {
-      const members = [
-        { conversation_id: convData.id, user_id: session.user.id, role: 'admin' },
-        ...selectedUsers.map(u => ({ conversation_id: convData.id, user_id: u.id, role: 'member' }))
-      ];
-
-      const { error: memberError } = await supabase.from('conversation_members').insert(members);
+    try {
+      const memberIds = [session.uid, ...selectedUsers.map(u => u.id)];
+      const docRef = await addDoc(collection(db, 'conversations'), {
+        type: 'group',
+        name: groupName,
+        members: memberIds,
+        created_by: session.uid,
+        updated_at: serverTimestamp()
+      });
       
-      if (memberError) {
-        toast.error('Failed to add members to group');
-        return;
-      }
-      
-      setActiveChat(convData.id);
+      setActiveChat(docRef.id);
       setShowNewChat(false);
       setIsCreatingGroup(false);
       setSelectedUsers([]);
       setGroupName('');
       setSearchQuery('');
-      fetchConversations();
+    } catch (error: any) {
+      toast.error(`Failed to create group: ${error.message}`);
     }
   };
 
   const handleLogout = async () => {
-    await supabase.auth.signOut();
+    await signOut(auth);
   };
 
   return (
     <div className="w-80 sm:w-96 bg-white border-r border-surface-200 flex flex-col shadow-xl z-20">
-      {/* Header Profile Section */}
       <div className="p-5 border-b border-surface-100 flex justify-between items-center bg-gradient-to-r from-brand-50 to-white">
         <div className="flex items-center gap-3">
           <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-brand-500 to-indigo-500 flex items-center justify-center text-white font-bold text-lg shadow-md shadow-brand-500/30">
@@ -193,19 +157,6 @@ export default function Sidebar({ session, currentUser, activeChat, setActiveCha
         </div>
       </div>
 
-      {/* Global Search */}
-      <div className="p-4 border-b border-surface-100">
-        <div className="relative group">
-          <Search className="absolute left-3.5 top-3 text-surface-400 group-focus-within:text-brand-500 transition-colors" size={18} />
-          <input 
-            type="text" 
-            placeholder="Search messages or users..." 
-            className="w-full bg-surface-50 border border-surface-200 rounded-xl py-2.5 pl-11 pr-4 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500 focus:bg-white transition-all placeholder:text-surface-400 font-medium text-surface-900"
-          />
-        </div>
-      </div>
-
-      {/* Lists */}
       <div className="flex-1 overflow-y-auto chat-scroll bg-white">
         {showNewChat ? (
           <div className="p-4 animate-fade-in">
@@ -310,14 +261,6 @@ export default function Sidebar({ session, currentUser, activeChat, setActiveCha
                   </div>
                 );
               })}
-              {searchQuery.length > 2 && searchResults.length === 0 && (
-                <div className="text-center py-8">
-                  <div className="w-12 h-12 bg-surface-100 rounded-full flex items-center justify-center mx-auto mb-3">
-                     <Search className="text-surface-400" size={24} />
-                  </div>
-                  <p className="text-sm font-medium text-surface-500">No users found</p>
-                </div>
-              )}
             </div>
           </div>
         ) : (
@@ -328,13 +271,6 @@ export default function Sidebar({ session, currentUser, activeChat, setActiveCha
                    <MessageSquare size={32} strokeWidth={1.5} />
                 </div>
                 <h3 className="font-bold text-surface-900 text-lg mb-1">No chats yet</h3>
-                <p className="text-sm text-surface-500 mb-6">Start a conversation with friends or create a group.</p>
-                <button 
-                  onClick={() => setShowNewChat(true)}
-                  className="bg-brand-600 text-white font-semibold py-2.5 px-6 rounded-xl shadow-lg shadow-brand-500/30 hover:bg-brand-700 transition-all active:scale-95"
-                >
-                  Start Chatting
-                </button>
               </div>
             ) : (
               <div className="pt-2">
@@ -352,21 +288,19 @@ export default function Sidebar({ session, currentUser, activeChat, setActiveCha
                        <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-surface-100 to-surface-200 flex items-center justify-center text-surface-600 font-bold text-lg overflow-hidden shrink-0">
                          {conv.type === 'group' ? <Users size={24} /> : (conv.displayName?.charAt(0) || 'U')}
                        </div>
-                       {/* Online badge mockup */}
-                       <div className="absolute -bottom-1 -right-1 w-4 h-4 bg-green-500 border-2 border-white rounded-full"></div>
                     </div>
                     
                     <div className="flex-1 min-w-0">
                       <div className="flex justify-between items-baseline mb-0.5">
-                        <h4 className={`font-bold truncate ${conv.hasUnread ? 'text-brand-600' : 'text-surface-900'}`}>
+                        <h4 className={`font-bold truncate text-surface-900`}>
                           {conv.displayName}
                         </h4>
-                        <span className={`text-xs font-semibold shrink-0 ${conv.hasUnread ? 'text-brand-600' : 'text-surface-400'}`}>
-                          {new Date(conv.updated_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                        <span className={`text-xs font-semibold shrink-0 text-surface-400`}>
+                          {conv.updated_at.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                         </span>
                       </div>
-                      <p className={`text-sm truncate pr-4 ${conv.hasUnread ? 'text-surface-900 font-semibold' : 'text-surface-500'}`}>
-                        {conv.hasUnread ? 'New messages' : 'Tap to view messages'}
+                      <p className={`text-sm truncate pr-4 text-surface-500`}>
+                        Tap to view messages
                       </p>
                     </div>
                   </div>

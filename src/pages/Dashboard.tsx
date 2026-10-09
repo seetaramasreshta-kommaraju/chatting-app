@@ -1,57 +1,64 @@
 import { useState, useEffect } from 'react';
-import type { Session } from '@supabase/supabase-js';
+import { User } from 'firebase/auth';
+import { doc, getDoc } from 'firebase/firestore';
+import { db } from '../lib/firebase';
 import Sidebar from '../components/Sidebar';
 import ChatArea from '../components/ChatArea';
-import { supabase } from '../lib/supabase';
 
-export default function Dashboard({ session }: { session: Session }) {
+export default function Dashboard({ session }: { session: User }) {
   const [activeChat, setActiveChat] = useState<string | null>(null);
   const [currentUser, setCurrentUser] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    // Fetch current user profile
     const fetchProfile = async () => {
-      const { data, error } = await supabase
-        .from('profiles')
-        .select('*')
-        .eq('id', session.user.id)
-        .single();
-      
-      if (!error && data) {
-        setCurrentUser(data);
+      try {
+        const docRef = doc(db, 'profiles', session.uid);
+        const docSnap = await getDoc(docRef);
+        if (docSnap.exists()) {
+          setCurrentUser({ id: session.uid, ...docSnap.data() });
+        }
+      } catch (error) {
+        console.error('Error fetching profile:', error);
+      } finally {
+        setLoading(false);
       }
     };
+    
     fetchProfile();
   }, [session]);
 
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-surface-50">
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-brand-600"></div>
+      </div>
+    );
+  }
+
   return (
-    <div className="flex h-screen bg-surface-50 overflow-hidden font-sans">
+    <div className="flex h-screen bg-surface-50 overflow-hidden">
       <Sidebar 
         session={session} 
-        currentUser={currentUser} 
+        currentUser={currentUser}
         activeChat={activeChat} 
         setActiveChat={setActiveChat} 
       />
-      
-      <div className="flex-1 flex flex-col h-full bg-white relative">
+      <main className="flex-1 min-w-0 bg-white relative shadow-[-10px_0_30px_-15px_rgba(0,0,0,0.05)] z-10 flex flex-col">
         {activeChat ? (
-          <ChatArea 
-            chatId={activeChat} 
-            currentUser={currentUser} 
-            session={session} 
-          />
+          <ChatArea session={session} chatId={activeChat} />
         ) : (
-          <div className="flex-1 flex items-center justify-center flex-col text-surface-500 bg-[#fafbfc]">
-            <div className="w-28 h-28 mb-6 rounded-[2rem] bg-gradient-to-tr from-brand-100 to-indigo-100 flex items-center justify-center shadow-inner">
-              <svg className="w-12 h-12 text-brand-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
-              </svg>
+          <div className="flex-1 flex flex-col items-center justify-center bg-surface-50/50">
+            <div className="w-24 h-24 bg-brand-50 rounded-full flex items-center justify-center mb-6 shadow-sm border border-brand-100">
+               <svg className="w-10 h-10 text-brand-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+               </svg>
             </div>
-            <h2 className="text-2xl font-bold text-surface-900 tracking-tight">Welcome to ConnectUp</h2>
-            <p className="mt-2 font-medium">Select a conversation or start a new one.</p>
+            <h2 className="text-2xl font-bold text-surface-900 mb-2">Welcome to ConnectUp</h2>
+            <p className="text-surface-500 font-medium">Select a conversation or start a new one to begin</p>
           </div>
         )}
-      </div>
+      </main>
     </div>
   );
 }
